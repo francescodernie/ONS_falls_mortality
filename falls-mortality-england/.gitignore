@@ -1,0 +1,20 @@
+# Data: downloaded or derived by the scripts, never committed
+data-raw/
+data/
+outputs/
+*.rds
+*.csv
+*.csv.gz
+*.xlsx
+*.xls
+*.zip
+
+# R session files
+.Rhistory
+.RData
+.Rproj.user/
+.Ruserdata
+
+# System files
+.DS_Store
+Thumbs.db
