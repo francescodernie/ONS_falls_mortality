@@ -67,4 +67,4 @@ The data pipeline adapts the approach and code of Oldham M, Jackson S, Brown J, 
 
 ## Licence
 
-_To be added._
+MIT
