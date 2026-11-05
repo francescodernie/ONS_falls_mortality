@@ -54,6 +54,7 @@ walk(c("data-raw/deaths", "data-raw/population", "data-raw/imd",
 # Run pipeline
 source(here("R", "01_download_deaths.R"))
 source(here("R", "02_process_deaths.R"))
+source(here("R", "02b_single_year_deaths.R"))
 source(here("R", "03_download_population.R"))
 source(here("R", "04_download_imd.R"))
 source(here("R", "05_build_population.R"))
