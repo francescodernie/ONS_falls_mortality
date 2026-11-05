@@ -910,7 +910,401 @@ save_tab(
   "tabS2_m8085_by_imd"
 )
 
+# =============================================================================
+# SECTION D: DESCRIPTIVE SUMMARY METRICS
+#
+#   D1  Summary table by IMD quintile (paper Table 1):
+#       deaths (all causes, falls), falls as % of all deaths, median age at
+#       death (all causes, falls), % female, % aged 85+, person-years
+#   D2  Falls as % of all deaths, by year and IMD quintile
+#   D3  Fall type (ICD-10 three-character code), by period; W19 share by year
+#   D4  Deaths with no IMD assigned, by year
+#   D5  Fall deaths in excess of least-deprived (Q1) rates
+#   D6  Counts and rates, 2002 vs 2022
+#
+# Median ages use single-year-of-age deaths saved by R/02b_single_year_deaths.R
+# (data/deaths_sya_summary.rds). Everything else uses falls_cell and the
+# ASR objects built in Objective 1, so run this section after Objective 1.
+# =============================================================================
 
+message("\n=== SECTION D: Descriptive summary metrics ===")
+
+sya_file <- here("data", "deaths_sya_summary.rds")
+if (!file.exists(sya_file)) {
+  stop("data/deaths_sya_summary.rds not found. Run ",
+       "source(here(\"R\", \"02b_single_year_deaths.R\")) first.")
+}
+sya <- readRDS(sya_file)
+
+# ── Study population ──────────────────────────────────────────────────────────
+# Match falls_cell, which drops the 0-19 bands. With 5-year bands the youngest
+# age included is therefore 20, so use the same cut-off here.
+min_age <- 20L
+stopifnot("15-19" %in% exclude_ages, !"20-24" %in% exclude_ages)
+
+all_sya   <- sya$all_cause %>% filter(Age >= min_age)
+falls_sya <- sya$falls     %>% filter(Age >= min_age)
+
+all_label  <- "All quintiles"
+col_levels <- c(imd_levels, all_label)
+
+# Quintile rows plus an "All quintiles" row. Deaths with no IMD are excluded
+# here, matching the rate analyses; they are counted separately in D4.
+add_all <- function(d) {
+  d <- filter(d, IMD_q != "Unassigned")
+  bind_rows(d, mutate(d, IMD_q = all_label))
+}
+
+# Weighted quantile of age from aggregated counts
+wq <- function(age, n, p) {
+  o  <- order(age)
+  cs <- cumsum(n[o]) / sum(n)
+  age[o][which(cs >= p)[1]]
+}
+med_iqr <- function(age, n) {
+  sprintf("%d (%d–%d)", wq(age, n, 0.5), wq(age, n, 0.25), wq(age, n, 0.75))
+}
+
+period_label <- paste0(min(falls_cell$Year), "–", max(falls_cell$Year))
+
+
+# ── D1 Summary table by IMD quintile ──────────────────────────────────────────
+message("--- D1: Summary by IMD quintile ---")
+
+d1_all <- all_sya %>%
+  filter(Sex == "Total") %>%
+  add_all() %>%
+  group_by(IMD_q) %>%
+  summarise(all_deaths = sum(Deaths),
+            med_all    = med_iqr(Age, Deaths),
+            .groups    = "drop")
+
+d1_falls <- falls_sya %>%
+  filter(Sex == "Total") %>%
+  add_all() %>%
+  group_by(IMD_q) %>%
+  summarise(falls     = sum(Deaths),
+            med_falls = med_iqr(Age, Deaths),
+            pct_85    = sum(Deaths[Age >= 85]) / sum(Deaths),
+            .groups   = "drop")
+
+d1_female <- falls_sya %>%
+  filter(Sex %in% c("Male", "Female")) %>%
+  add_all() %>%
+  group_by(IMD_q) %>%
+  summarise(pct_female = sum(Deaths[Sex == "Female"]) / sum(Deaths),
+            .groups    = "drop")
+
+d1_py <- PopForASR %>%
+  filter(Sex == "Total", !Age5 %in% exclude_ages,
+         Year %in% unique(falls_cell$Year)) %>%
+  mutate(IMD_q = if_else(IMD_q == "Overall", all_label, IMD_q)) %>%
+  group_by(IMD_q) %>%
+  summarise(person_years = sum(Pop), .groups = "drop")
+
+d1 <- d1_all %>%
+  left_join(d1_falls,  by = "IMD_q") %>%
+  left_join(d1_female, by = "IMD_q") %>%
+  left_join(d1_py,     by = "IMD_q") %>%
+  mutate(IMD_q = factor(IMD_q, levels = col_levels)) %>%
+  arrange(IMD_q)
+
+table_d1 <- d1 %>%
+  transmute(
+    IMD_q,
+    `Person-years (adults ≥20)`               = comma(person_years),
+    `Deaths, all causes`                      = comma(all_deaths),
+    `Fall-related deaths (W00–W19)`           = comma(falls),
+    `Falls as % of all deaths`                = percent(falls / all_deaths, accuracy = 0.01),
+    `Crude fall death rate per 100,000 person-years` =
+      number(falls / person_years * 1e5, accuracy = 0.1),
+    `Median age at death, all causes (IQR)`   = med_all,
+    `Median age at death, falls (IQR)`        = med_falls,
+    `Female, % of fall deaths`                = percent(pct_female, accuracy = 0.1),
+    `Aged 85+, % of fall deaths`              = percent(pct_85, accuracy = 0.1)
+  ) %>%
+  pivot_longer(-IMD_q, names_to = "Measure", values_to = "value") %>%
+  pivot_wider(names_from = IMD_q, values_from = value) %>%
+  mutate(Measure = factor(Measure, levels = unique(Measure)))
+
+print(table_d1, width = Inf)
+save_tab(table_d1, "tabD1_summary_by_imd")
+
+
+# ── D2 Falls as % of all deaths, by year and IMD quintile ─────────────────────
+message("--- D2: Falls as % of all deaths ---")
+
+d2 <- falls_sya %>%
+  filter(Sex == "Total") %>%
+  add_all() %>%
+  group_by(Year, IMD_q) %>%
+  summarise(falls = sum(Deaths), .groups = "drop") %>%
+  right_join(
+    all_sya %>%
+      filter(Sex == "Total") %>%
+      add_all() %>%
+      group_by(Year, IMD_q) %>%
+      summarise(all_deaths = sum(Deaths), .groups = "drop"),
+    by = c("Year", "IMD_q")
+  ) %>%
+  mutate(falls     = replace_na(falls, 0),
+         pct_falls = 100 * falls / all_deaths,
+         IMD_q     = factor(IMD_q, levels = col_levels)) %>%
+  arrange(IMD_q, Year)
+
+ggplot(filter(d2, IMD_q != all_label),
+       aes(x = Year, y = pct_falls, colour = IMD_q)) +
+  geom_line(linewidth = 1.0) +
+  scale_x_continuous(breaks = seq(2002, 2022, 2)) +
+  scale_y_continuous(limits = c(0, NA),
+                     labels = label_number(accuracy = 0.1, suffix = "%"),
+                     name   = "Fall-related deaths as % of all deaths") +
+  scale_colour_manual(values = quintile_colours, name = "IMD quintile") +
+  labs(
+    title    = "Figure D2 — Falls as a share of all deaths by IMD quintile, England 2002–2022",
+    subtitle = "All persons, adults ≥20 years",
+    x        = NULL,
+    caption  = "Source: ONS ad-hoc release 1355 | Unadjusted proportions"
+  ) +
+  theme_falls()
+
+save_fig("figD2_falls_pct_all_deaths")
+save_tab(
+  d2 %>%
+    transmute(Year,
+              `IMD quintile`           = IMD_q,
+              `Fall-related deaths`    = falls,
+              `Deaths, all causes`     = all_deaths,
+              `Falls % of all deaths`  = round(pct_falls, 3)),
+  "tabD2_falls_pct_all_deaths"
+)
+
+
+# ── D3 Fall type ──────────────────────────────────────────────────────────────
+message("--- D3: Fall type ---")
+
+# All fall deaths regardless of IMD assignment (fall type does not depend on it)
+fall_type_map <- function(icd3) {
+  case_when(
+    icd3 %in% c("W00", "W01", "W02", "W03", "W18") ~ "Same level (W00–W03, W18)",
+    icd3 %in% c("W06", "W07", "W08")               ~ "Bed, chair or other furniture (W06–W08)",
+    icd3 == "W10"                                  ~ "Stairs or steps (W10)",
+    icd3 %in% paste0("W", 11:17)                   ~ "From a height (W11–W17)",
+    icd3 %in% c("W04", "W05", "W09")               ~ "Other specified (W04, W05, W09)",
+    icd3 == "W19"                                  ~ "Unspecified fall (W19)"
+  )
+}
+fall_type_levels <- c("Same level (W00–W03, W18)",
+                      "Bed, chair or other furniture (W06–W08)",
+                      "Stairs or steps (W10)",
+                      "From a height (W11–W17)",
+                      "Other specified (W04, W05, W09)",
+                      "Unspecified fall (W19)")
+
+d3_base <- falls_sya %>%
+  filter(Sex == "Total") %>%
+  mutate(icd3      = substr(icd10, 1, 3),
+         fall_type = factor(fall_type_map(icd3), levels = fall_type_levels),
+         Period    = cut(Year,
+                         breaks = c(2001, 2006, 2011, 2016, 2022),
+                         labels = c("2002–2006", "2007–2011",
+                                    "2012–2016", "2017–2022")))
+
+stopifnot(!anyNA(d3_base$fall_type))
+
+# By grouped type and period, with an all-years column
+table_d3 <- bind_rows(
+  mutate(d3_base, Period = as.character(Period)),
+  mutate(d3_base, Period = period_label)
+) %>%
+  mutate(Period = factor(Period, levels = c(levels(d3_base$Period), period_label))) %>%
+  group_by(Period, fall_type) %>%
+  summarise(n = sum(Deaths), .groups = "drop_last") %>%
+  mutate(cell = paste0(comma(n), " (", percent(n / sum(n), accuracy = 0.1), ")")) %>%
+  ungroup() %>%
+  select(`Fall type` = fall_type, Period, cell) %>%
+  pivot_wider(names_from = Period, values_from = cell, values_fill = "0 (0.0%)")
+
+save_tab(table_d3, "tabD3a_fall_type_by_period")
+
+# Every three-character code, all years (full detail for the appendix)
+save_tab(
+  d3_base %>%
+    group_by(`ICD-10 code` = icd3) %>%
+    summarise(Deaths = sum(Deaths), .groups = "drop") %>%
+    mutate(`% of fall deaths` = round(100 * Deaths / sum(Deaths), 2)) %>%
+    arrange(`ICD-10 code`),
+  "tabD3b_fall_deaths_by_icd10"
+)
+
+# W19 (unspecified) share by year: a coding-quality marker. Dashed lines mark
+# the ICD-10 coding updates ONS introduced in January 2011 and January 2014.
+d3_w19 <- d3_base %>%
+  group_by(Year) %>%
+  summarise(pct_w19 = 100 * sum(Deaths[icd3 == "W19"]) / sum(Deaths),
+            .groups = "drop")
+
+ggplot(d3_w19, aes(x = Year, y = pct_w19)) +
+  geom_vline(xintercept = c(2011, 2014), linetype = "dashed", colour = "grey60") +
+  geom_line(colour = "#2c7fb8", linewidth = 1.0) +
+  geom_point(colour = "#2c7fb8", size = 1.8) +
+  scale_x_continuous(breaks = seq(2002, 2022, 2)) +
+  scale_y_continuous(limits = c(0, 100),
+                     labels = label_number(suffix = "%"),
+                     name   = "Share of fall deaths coded W19") +
+  labs(
+    title    = "Figure D3 — Unspecified falls (W19) as a share of fall-related deaths, England 2002–2022",
+    subtitle = "All persons, adults ≥20 years | Dashed lines: ICD-10 coding updates (2011, 2014)",
+    x        = NULL,
+    caption  = "Source: ONS ad-hoc release 1355"
+  ) +
+  theme_falls()
+
+save_fig("figD3_w19_share")
+save_tab(d3_w19 %>% mutate(pct_w19 = round(pct_w19, 2)) %>%
+           rename(`% of fall deaths coded W19` = pct_w19),
+         "tabD3c_w19_share_by_year")
+
+
+# ── D4 Deaths with no IMD assigned ────────────────────────────────────────────
+message("--- D4: Unassigned IMD ---")
+
+missing_by_year <- function(d, label) {
+  d %>%
+    filter(Sex == "Total") %>%
+    group_by(Year) %>%
+    summarise(total      = sum(Deaths),
+              unassigned = sum(Deaths[IMD_q == "Unassigned"]),
+              .groups    = "drop") %>%
+    bind_rows(summarise(., Year = NA_integer_,
+                        total = sum(total), unassigned = sum(unassigned))) %>%
+    mutate(Year = if_else(is.na(Year), period_label, as.character(Year)),
+           Group = label)
+}
+
+d4 <- bind_rows(missing_by_year(all_sya,   "All causes"),
+                missing_by_year(falls_sya, "Falls (W00–W19)")) %>%
+  mutate(pct = percent(unassigned / total, accuracy = 0.01))
+
+d4_total <- filter(d4, Year == period_label)
+message("Unassigned IMD, ", period_label, ": ",
+        paste0(d4_total$Group, " ", comma(d4_total$unassigned),
+               " (", d4_total$pct, ")", collapse = "; "))
+
+save_tab(
+  d4 %>%
+    select(Group, Year,
+           `Total deaths`      = total,
+           `No IMD assigned`   = unassigned,
+           `% no IMD assigned` = pct),
+  "tabD4_unassigned_imd"
+)
+
+
+# ── D5 Fall deaths in excess of Q1 rates ──────────────────────────────────────
+message("--- D5: Excess deaths relative to Q1 ---")
+
+# For each year, apply Q1's age- and sex-specific rates to each quintile's
+# population. Excess = observed - expected. Single-year Q1 rates are used;
+# negative cells are kept, so the totals are net.
+q1_rates <- falls_cell %>%
+  filter(Sex %in% c("Male", "Female"), IMD_q == "Q1 (least deprived)") %>%
+  transmute(Year, Sex, Age5,
+            rate_q1 = if_else(Pop > 0, Deaths / Pop, 0))
+
+d5_cells <- falls_cell %>%
+  filter(Sex %in% c("Male", "Female"), IMD_q %in% imd_levels) %>%
+  left_join(q1_rates, by = c("Year", "Sex", "Age5")) %>%
+  mutate(expected = rate_q1 * Pop)
+
+stopifnot(!anyNA(d5_cells$expected))
+
+d5_year <- d5_cells %>%
+  group_by(Year) %>%
+  summarise(observed = sum(Deaths), expected = sum(expected), .groups = "drop") %>%
+  mutate(excess = observed - expected, pct_excess = excess / observed)
+
+d5_quintile <- d5_cells %>%
+  group_by(IMD_q) %>%
+  summarise(observed = sum(Deaths), expected = sum(expected), .groups = "drop") %>%
+  mutate(excess = observed - expected, pct_excess = excess / observed)
+
+last5 <- filter(d5_year, Year >= max(Year) - 4)
+message("Excess fall deaths vs Q1 rates, ", period_label, ": ",
+        comma(sum(d5_year$excess)), " (",
+        percent(sum(d5_year$excess) / sum(d5_year$observed), accuracy = 0.1),
+        " of fall deaths)")
+message("Average per year, ", min(last5$Year), "–", max(last5$Year), ": ",
+        comma(mean(last5$excess)), " (",
+        percent(sum(last5$excess) / sum(last5$observed), accuracy = 0.1), ")")
+
+save_tab(
+  d5_year %>%
+    mutate(across(c(expected, excess), ~ round(.x, 1)),
+           pct_excess = round(100 * pct_excess, 2)) %>%
+    rename(`Observed fall deaths`        = observed,
+           `Expected at Q1 rates`        = expected,
+           `Excess deaths`               = excess,
+           `Excess as % of fall deaths`  = pct_excess),
+  "tabD5a_excess_by_year"
+)
+save_tab(
+  d5_quintile %>%
+    mutate(across(c(expected, excess), ~ round(.x, 1)),
+           pct_excess = round(100 * pct_excess, 2)) %>%
+    rename(`IMD quintile`               = IMD_q,
+           `Observed fall deaths`       = observed,
+           `Expected at Q1 rates`       = expected,
+           `Excess deaths`              = excess,
+           `Excess as % of fall deaths` = pct_excess),
+  "tabD5b_excess_by_quintile"
+)
+
+
+# ── D6 2002 vs 2022 ───────────────────────────────────────────────────────────
+message("--- D6: First vs last year ---")
+
+y0 <- min(falls_cell$Year)
+y1 <- max(falls_cell$Year)
+
+d6_counts <- d2 %>%
+  filter(Year %in% c(y0, y1)) %>%
+  select(Year, IMD_q, falls, all_deaths) %>%
+  pivot_wider(names_from = Year, values_from = c(falls, all_deaths))
+
+d6_asr <- bind_rows(
+  asr_imd     %>% mutate(IMD_q = as.character(IMD_q)),
+  asr_overall %>% mutate(IMD_q = all_label)
+) %>%
+  filter(Year %in% c(y0, y1)) %>%
+  select(Year, IMD_q, mx) %>%
+  pivot_wider(names_from = Year, values_from = mx, names_prefix = "asr_")
+
+pct_change <- function(a, b) percent((b - a) / a, accuracy = 0.1, style_positive = "plus")
+
+table_d6 <- d6_counts %>%
+  left_join(d6_asr, by = "IMD_q") %>%
+  mutate(IMD_q = factor(IMD_q, levels = col_levels)) %>%
+  arrange(IMD_q) %>%
+  transmute(
+    `IMD quintile`                          = IMD_q,
+    !!paste("Fall deaths", y0)              := comma(.data[[paste0("falls_", y0)]]),
+    !!paste("Fall deaths", y1)              := comma(.data[[paste0("falls_", y1)]]),
+    `Change in fall deaths`                 = pct_change(.data[[paste0("falls_", y0)]],
+                                                         .data[[paste0("falls_", y1)]]),
+    !!paste("Fall ASR", y0)                 := number(.data[[paste0("asr_", y0)]], accuracy = 0.1),
+    !!paste("Fall ASR", y1)                 := number(.data[[paste0("asr_", y1)]], accuracy = 0.1),
+    `Change in fall ASR`                    = pct_change(.data[[paste0("asr_", y0)]],
+                                                         .data[[paste0("asr_", y1)]]),
+    !!paste("All-cause deaths", y0)         := comma(.data[[paste0("all_deaths_", y0)]]),
+    !!paste("All-cause deaths", y1)         := comma(.data[[paste0("all_deaths_", y1)]])
+  )
+
+print(table_d6, width = Inf)
+save_tab(table_d6, "tabD6_first_vs_last_year")
+
+rm(sya, all_sya, falls_sya)
+                   
 # =============================================================================
 # COMPLETION SUMMARY
 # =============================================================================
