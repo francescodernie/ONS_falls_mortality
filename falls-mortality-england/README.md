@@ -7,7 +7,7 @@ Analysis code for:
 
 Presented at the British Geriatrics Society Autumn Meeting, Nottingham, November 2026.
 
-**Pre-registered protocol:** OSF — [_click here_](https://osf.io/cqauh/overview)
+**Pre-registered protocol:** OSF - [_click here_](https://osf.io/cqauh/overview)
 
 **Data source:** - [_click here_](https://www.ons.gov.uk/peoplepopulationandcommunity/birthsdeathsandmarriages/deaths/adhocs/1355deathsbysexsingleyearofageunderlyingcauseicd10codeanddeprivationdecileengland2001to2022)
 
